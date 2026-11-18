@@ -197,3 +197,8 @@ winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457
 # craft-libs' vendored krilla 0.8.2: decoded PNGs are capped at 1 GiB and reserved fallibly, and a
 # panic while drawing unwinds without aborting.
 krilla = { git = "https://github.com/storytold/craft-libs", rev = "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545" }
+
+# WHY: our fork of craft-libs adds cross-origin parent support to craft-web-host (an allowlisted parent named by
+# ?parentOrigin); everything else in craft-libs stays on the revs pinned above. Remove when upstream has it.
+[patch."https://github.com/storytold/craft-libs"]
+craft-web-host = { git = "https://github.com/FounderOS/craft-libs", branch = "founderos/main" }
