@@ -1,8 +1,10 @@
 //! The browser shell: web `Services` and the eframe web runner.
 
+use crate::autosave::Autosave;
 use figcraft_engine::Session;
 use figcraft_ui_egui::{ContentsFuture, FigApp, Services};
 use wasm_bindgen::JsCast as _;
+use web_time::Instant;
 
 const CANVAS_ID: &str = "figcraft_canvas";
 const LOADING_ID: &str = "figcraft_loading";
@@ -101,7 +103,8 @@ pub fn start() {
                     if let Some(bridge) = &app_bridge {
                         bridge.listen(opens.clone(), cc.egui_ctx.clone());
                     }
-                    Ok(Box::new(WebShell { fig, host: app_bridge, opens }))
+                    let autosave = app_bridge.as_ref().map(|_| Autosave::new(Instant::now()));
+                    Ok(Box::new(WebShell { fig, host: app_bridge, opens, autosave }))
                 }),
             )
             .await;
@@ -181,6 +184,30 @@ struct WebShell {
     host: Option<crate::host::Bridge>,
     /// Files the host sent, waiting to join the app's own open queue.
     opens: crate::host::OpenQueue,
+    /// Saves to the host once the file rests (`crate::autosave`); only in host mode.
+    autosave: Option<Autosave>,
+}
+
+impl WebShell {
+    /// Host mode: File › Save (to the host, as Ctrl+S does) once the file in front has had unsaved
+    /// changes and no work for [`crate::autosave::IDLE`]. Only when that Save goes back to the
+    /// host's own file ([`crate::hostmode::saves_in_place`]); a Save As is never run on its own.
+    fn autosave(&mut self, ctx: &egui::Context) {
+        let Some(autosave) = &mut self.autosave else { return };
+        let now = Instant::now();
+        // What Save saves: a branch tab's main file.
+        let file = self.fig.session.docs.get(figcraft_engine::branches::file_tab(&self.fig.session));
+        let dirty = file.is_some_and(figcraft_engine::DocState::is_dirty);
+        // A gesture, a live text preview or a version shown in place of the file is work too.
+        let busy = crate::autosave::user_busy(ctx) || file.is_some_and(|d| d.interaction.is_some() || d.text_preview.is_some() || d.preview.is_some());
+        let in_place = crate::hostmode::saves_in_place(self.host.as_ref().and_then(crate::host::Bridge::host_file).as_deref());
+        if autosave.step(file.map(|d| (d.uid, d.revision)), dirty && in_place, busy, false, now) {
+            figcraft_ui_egui::windows::guard(&mut self.fig, ctx, FigApp::save);
+        }
+        if let Some(wait) = autosave.wake_in(now) {
+            ctx.request_repaint_after(wait);
+        }
+    }
 }
 
 impl eframe::App for WebShell {
@@ -206,6 +233,7 @@ impl eframe::App for WebShell {
             });
         }
         figcraft_ui_egui::windows::guard(&mut self.fig, ctx, |fig| fig.background_tick(ctx));
+        self.autosave(ctx);
         // The host hears when unsaved changes appear or go away (crate::host).
         if let Some(bridge) = &self.host {
             bridge.set_dirty(self.fig.session.docs.iter().any(|d| d.is_dirty()));
@@ -231,6 +259,9 @@ impl eframe::App for WebShell {
         if crate::local_fonts::take_loaded() {
             self.fig.run("text.refit", serde_json::json!({}));
         }
+        // Again after the UI: an edit made in it starts its idle time now, not at the next pass,
+        // which an idle page may never run.
+        self.autosave(ui.ctx());
     }
 }
 

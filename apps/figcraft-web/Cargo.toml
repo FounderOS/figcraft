@@ -26,6 +26,8 @@ craft-web-host = { git = "https://github.com/storytold/craft-libs", rev = "fd5e2
 base64 = { workspace = true }
 egui = { workspace = true }
 log = { workspace = true }
+# The autosave clock (`autosave`): `std::time::Instant` panics in the browser.
+web-time = "1"
 serde_json = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

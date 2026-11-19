@@ -49,9 +49,27 @@ pub fn save_as(name: &str, host_file: Option<&str>) -> bool {
     }
 }
 
+/// Whether File › Save hands the document back as the host's file (`saveAs: false`) without
+/// asking: the file the host opened is a `.figcraft` file, which `FigApp::save` saves in place.
+/// Any other (a `.json` or `.fig` opened, or no file from the host) makes Save a Save As, which
+/// autosave ([`crate::autosave`]) never runs.
+pub fn saves_in_place(host_file: Option<&str>) -> bool {
+    let ext = host_file.and_then(|name| std::path::Path::new(name).extension()).and_then(std::ffi::OsStr::to_str);
+    ext.is_some_and(|e| e.eq_ignore_ascii_case("figcraft"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_figcraft_file_from_the_host_saves_in_place() {
+        assert!(saves_in_place(Some("Poster.figcraft")));
+        assert!(saves_in_place(Some("Poster.FIGCRAFT")), "extensions compare without case");
+        assert!(!saves_in_place(Some("design.json")), "Save asks for a .figcraft name");
+        assert!(!saves_in_place(Some("Poster.fig")));
+        assert!(!saves_in_place(None), "an untitled document");
+    }
 
     #[test]
     fn open_names_fall_back_to_the_default_when_the_host_sent_none() {
