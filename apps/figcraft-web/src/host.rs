@@ -13,9 +13,10 @@
 //!   ([`figcraft_ui_egui::browser_can_read`]'s 512 MB) is refused before its bytes are copied,
 //!   and anything malformed is ignored. FigCraft reads whole files, so it says `file: false` in
 //!   `ready` and a host sends `bytes`.
-//! - `figcraft:save` (to the host): `{ name, saveAs, bytes }` for every file the app hands its
-//!   download service; in host mode nothing reaches the browser's downloads. `saveAs` says whether
-//!   the file becomes the document's file ([`crate::hostmode::save_as`]):
+//! - `figcraft:save` (to the host): `{ name, saveAs, bytes, id }` for every file the app hands its
+//!   download service (the host answers `figcraft:saved` `{ id }` once it is stored, and autosave
+//!   waits for that, [`crate::in_flight`]); in host mode nothing reaches the browser's downloads.
+//!   `saveAs` says whether the file becomes the document's file ([`crate::hostmode::save_as`]):
 //!   - A Save of the file the host opened, under its own name: `false`.
 //!   - A document file (`.figcraft` or `.json`, the formats `file.save` and `file.saveAs` write)
 //!     under a name the host didn't open — Save As, or a Save of a document the host never sent
@@ -34,6 +35,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use craft_web_host::web::{FileData, Host, Message};
+use web_time::Instant;
 use figcraft_ui_egui::FigApp;
 
 /// The app id in the host messages (`figcraft:ready`).
@@ -52,6 +54,8 @@ pub struct Bridge {
     /// The file the host opened, and after a `saveAs` hand-over the document's file: the name a
     /// Save under (`saveAs: false`) is decided against.
     host_file: Rc<RefCell<Option<String>>>,
+    /// Saves posted and not yet answered with `saved` ([`crate::in_flight`]).
+    in_flight: crate::in_flight::Shared,
 }
 
 impl Bridge {
@@ -59,18 +63,21 @@ impl Bridge {
     /// `data-host="page"` on the canvas, an unframed `?host=parent` page (it stays the normal app
     /// with downloads), or a parent on another origin.
     pub fn connect(canvas: &web_sys::HtmlCanvasElement) -> Option<Self> {
-        Some(Self { host: Rc::new(Host::connect(APP, canvas)?), host_file: Rc::default() })
+        Some(Self { host: Rc::new(Host::connect(APP, canvas)?), host_file: Rc::default(), in_flight: Rc::default() })
     }
 
     /// Hear the files the host sends, and queue each one on `opens` for the app's own open path
     /// (the shell drains it into [`figcraft_ui_egui::pending_open`] every frame, so a host file
     /// opens like a dropped one).
     pub fn listen(&self, opens: OpenQueue, ctx: egui::Context) {
-        let host_file = self.host_file.clone();
-        self.host.listen(move |message| {
-            if let Message::Open { name, data } = message {
-                deliver_open(&opens, &ctx, &host_file, &name, &data);
+        let (host_file, in_flight) = (self.host_file.clone(), self.in_flight.clone());
+        self.host.listen(move |message| match message {
+            Message::Open { name, data } => deliver_open(&opens, &ctx, &host_file, &name, &data),
+            Message::Saved { id } => {
+                in_flight.borrow_mut().done(&id);
+                ctx.request_repaint();
             }
+            _ => {}
         });
     }
 
@@ -102,13 +109,23 @@ impl Bridge {
         let name = file_name(path);
         let host_file = self.host_file.borrow().clone();
         let save_as = crate::hostmode::save_as(&name, host_file.as_deref());
-        let sent = self.host.post_save(&name, bytes, None, save_as).is_ok();
+        // The borrow ends before the post: a page host may answer `saved` while it runs.
+        let id = self.in_flight.borrow_mut().begin(Instant::now());
+        let sent = self.host.post_save(&name, bytes, Some(&id), save_as).is_ok();
+        if !sent {
+            self.in_flight.borrow_mut().done(&id);
+        }
         // After a Save As hand-over the host has the new file: the next Save of it sends its name
         // with `saveAs: false`. A failed send changes nothing, so a retry is still a Save As.
         if sent && save_as {
             *self.host_file.borrow_mut() = Some(name);
         }
         sent
+    }
+
+    /// A save is out and the host has not answered it yet (for at most [`crate::in_flight::TIMEOUT`]).
+    pub fn saving(&self) -> bool {
+        self.in_flight.borrow_mut().running(Instant::now())
     }
 
     /// Report unsaved changes when they appear or go away, not every frame (the crate does not

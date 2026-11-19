@@ -201,7 +201,8 @@ impl WebShell {
         // A gesture, a live text preview or a version shown in place of the file is work too.
         let busy = crate::autosave::user_busy(ctx) || file.is_some_and(|d| d.interaction.is_some() || d.text_preview.is_some() || d.preview.is_some());
         let in_place = crate::hostmode::saves_in_place(self.host.as_ref().and_then(crate::host::Bridge::host_file).as_deref());
-        if autosave.step(file.map(|d| (d.uid, d.revision)), dirty && in_place, busy, false, now) {
+        let saving = self.host.as_ref().is_some_and(crate::host::Bridge::saving);
+        if autosave.step(file.map(|d| (d.uid, d.revision)), dirty && in_place, busy, saving, now) {
             figcraft_ui_egui::windows::guard(&mut self.fig, ctx, FigApp::save);
         }
         if let Some(wait) = autosave.wake_in(now) {
